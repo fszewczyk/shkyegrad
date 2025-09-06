@@ -1,0 +1,33 @@
+[project]
+name = "scorch"
+version = "0.1.0"
+description = "Simple AI Framework for learning purposes"
+authors = [
+    { name="Franciszek Szewczyk", email="szewczyk.franciszek02@gmail.com" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=2.0.0",
+    "torch>=2.7.1",
+    "matplotlib>=3.10.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "flake8",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
