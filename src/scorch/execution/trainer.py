@@ -24,7 +24,8 @@ class Runner:
         self.loss_fn = loss
         self.loggers = loggers
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.is_cuda = torch.cuda.is_available()
+        self.device = torch.device("cuda" if self.is_cuda else "cpu")
 
         print(f"Using device: {self.device}")
 
@@ -40,10 +41,12 @@ class Runner:
         for epoch in range(iters):
             if train:
                 self.model.train()
+
+                prev_logger_elapsed = 0
                 for batch_index, (x, y) in enumerate(self.training_loader):
                     with Profiler() as profiler_data_move:
-                        x = x.to(self.device)
-                        y = y.to(self.device)
+                        x = x.to(self.device, non_blocking=self.is_cuda)
+                        y = y.to(self.device, non_blocking=self.is_cuda)
 
                     self.optimizer.zero_grad()
 
@@ -63,7 +66,7 @@ class Runner:
                         'input': x,
                         'target': y,
                         'prediction': pred,
-                        'loss': loss.detach(),
+                        'loss': loss,
                         'epoch': epoch,
                         'total_epochs': iters,
                         'last_epoch': epoch == iters - 1,
@@ -80,21 +83,26 @@ class Runner:
                             'loss': profiler_loss.elapsed,
                             'backward': profiler_backward.elapsed,
                             'optimizer': profiler_optimizer.elapsed,
+                            'loggers': prev_logger_elapsed
                         }
                     }
 
-                    for logger in self.loggers:
-                        logger(inference_data)
+                    with Profiler() as profiler_loggers:
+                        for logger in self.loggers:
+                            logger(inference_data)
+
+                    prev_logger_elapsed = profiler_loggers.elapsed
 
             if validate:
                 assert self.validation_loader, "Trying to validate without validation loader."
                 if self.validation_loader:
                     self.model.eval()
                     with torch.no_grad():
+                        prev_logger_elapsed = 0
                         for batch_index, (x, y) in enumerate(self.validation_loader):
                             with Profiler() as profiler_data_move:
-                                x = x.to(self.device)
-                                y = y.to(self.device)
+                                x = x.to(self.device, non_blocking = self.is_cuda)
+                                y = y.to(self.device, non_blocking = self.is_cuda)
 
                             with Profiler() as profiler_inference:
                                 pred = self.model(x)
@@ -106,7 +114,7 @@ class Runner:
                                 'input': x,
                                 'target': y,
                                 'prediction': pred,
-                                'loss': loss.detach(),
+                                'loss': loss,
                                 'epoch': epoch,
                                 'total_epochs': iters,
                                 'last_epoch': epoch == iters - 1,
@@ -121,11 +129,16 @@ class Runner:
                                     'data_move': profiler_data_move.elapsed,
                                     'inference': profiler_inference.elapsed,
                                     'loss': profiler_loss.elapsed,
+                                    'loggers': prev_logger_elapsed
                                 }
                             }
 
-                            for logger in self.loggers:
-                                logger(inference_data)
+
+                            with Profiler() as profiler_loggers:
+                                for logger in self.loggers:
+                                    logger(inference_data)
+
+                            prev_logger_elapsed = profiler_loggers.elapsed
 
             if self.lr_scheduler:
                 self.lr_scheduler.step()

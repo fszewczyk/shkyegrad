@@ -80,16 +80,16 @@ class ProfileLogger(InferenceLogger):
             return
 
         if self.start_time is None:
-            self.start_time = time.time()
+            self.start_time = time.perf_counter()
             self.start_batch = inference_data['global_batch_index']
 
         self.total_samples += inference_data['input'].size(0)
         
         timing_data = self.last_timings[mode]
         for name, timing in inference_data['profiles'].items():
-            recent_timings = timing_data.get(name, [])
-            recent_timings.append(timing)
-            timing_data[name] = recent_timings
+            sum_timings = timing_data.get(name, 0)
+            sum_timings += timing
+            timing_data[name] = sum_timings
 
         if (inference_data['global_batch_index'] - self.start_batch + 1) % self.log_every_batch == 0:
             if self.log_console:
@@ -105,7 +105,7 @@ class ProfileLogger(InferenceLogger):
             self.total_samples = 0
 
     def __log_throughput(self, inference_data):
-        end_time = time.time()
+        end_time = time.perf_counter()
         throughput = self.total_samples / (end_time - self.start_time)
         loop_time = (end_time - self.start_time) / (inference_data['global_batch_index'] - self.start_batch)
         
@@ -129,8 +129,8 @@ class ProfileLogger(InferenceLogger):
         mode = 'train' if inference_data['train'] else 'valid'
         wandb_log = {'batch': inference_data['global_batch_index']}
         profiled_time = 0
-        for name, timings in self.last_timings[mode].items():
-            mean = sum(timings) / len(timings)
+        for name, sum_timings in self.last_timings[mode].items():
+            mean = sum_timings / self.log_every_batch
             profiled_time += mean
             wandb_log[f'{mode}/timing-{name}'] = mean
 
@@ -203,9 +203,10 @@ class ArtifactLogger(InferenceLogger):
         self.__previous_epoch = inference_data['epoch']
 
 class LossLogger(InferenceLogger):
-    def __init__(self, epochs: int, train_batches: int, valid_batches: int = None, log_every_epoch: int = 1, log_every_batch: int = math.inf, log_wandb=False, log_console=True):
-        self.train = torch.zeros((epochs, train_batches), requires_grad=False, dtype=torch.float32)
-        self.valid = None if valid_batches is None else torch.zeros((epochs, valid_batches), requires_grad=False, dtype=torch.float32)
+    def __init__(self, epochs: int, train_batches: int, valid_batches: int = None, log_every_epoch: int = 1, log_every_batch: int = math.inf, log_wandb=False, log_console=True, device='cpu'):
+        store_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.train = torch.zeros((epochs, train_batches), requires_grad=False, dtype=torch.float32).to(store_device)
+        self.valid = None if valid_batches is None else torch.zeros((epochs, valid_batches), requires_grad=False, dtype=torch.float32).to(store_device)
     
         self.log_every_epoch = log_every_epoch
         self.log_every_batch = log_every_batch
@@ -428,11 +429,10 @@ class ClassifierLogger(InferenceLogger):
     def __get_top_k_error_rate(self, pred_dists, true_indices, k):
         confidences, pred_indices = torch.topk(pred_dists, k, dim=-1)
         correct = 0.0
-        for pred_indices_of_sample, true_index in zip(pred_indices, true_indices):
-            if true_index in pred_indices_of_sample:
-                correct += 1.0
+        correct = (pred_indices == true_indices.unsqueeze(1)).any(dim=1).float().mean()
+        error_rate = 1.0 - correct.item()
 
-        return 1.0 - (correct / pred_dists.shape[0])
+        return error_rate
     
     def __log_epoch(self):
         if self.log_console:
