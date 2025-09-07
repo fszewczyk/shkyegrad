@@ -4,12 +4,11 @@ import numpy as np
 from dataclasses import dataclass
 import math
 import matplotlib.pyplot as plt
-from typing import Union
-import os
 import pathlib
 import json
 import secrets
 from datetime import datetime
+import time
 
 class InferenceLogger:
     def __init__(self):
@@ -49,6 +48,103 @@ class LearningRateLogger(InferenceLogger):
                 wandb.log(data)
 
         self.__previous_epoch = inference_data['epoch']
+
+class ProfileLogger(InferenceLogger):
+    def __init__(self, log_every_batch, log_console=True, log_wandb=False):
+        self.log_every_batch = log_every_batch
+
+        self.start_time = None
+        self.start_batch = None
+        self.total_samples = 0
+        self.current_mode = None
+
+        self.last_timings = {
+            'train': {},
+            'valid': {}
+        }
+
+        self.log_console = log_console
+        self.log_wandb = log_wandb
+
+    def update(self, inference_data):
+        mode = 'train' if inference_data['train'] else 'valid'
+        if self.current_mode != mode:
+            self.current_mode = mode
+            self.start_time = None
+            self.total_samples = 0
+            self.last_timings = {
+                'train': {},
+                'valid': {}
+            }
+
+            return
+
+        if self.start_time is None:
+            self.start_time = time.time()
+            self.start_batch = inference_data['global_batch_index']
+
+        self.total_samples += inference_data['input'].size(0)
+        
+        timing_data = self.last_timings[mode]
+        for name, timing in inference_data['profiles'].items():
+            recent_timings = timing_data.get(name, [])
+            recent_timings.append(timing)
+            timing_data[name] = recent_timings
+
+        if (inference_data['global_batch_index'] - self.start_batch + 1) % self.log_every_batch == 0:
+            if self.log_console:
+                print(f"Epoch {inference_data['epoch']}, Batches {inference_data['global_batch_index'] - self.log_every_batch}-{inference_data['global_batch_index']}")
+
+            loop_time = self.__log_throughput(inference_data)
+            self.__log_profiles(inference_data, loop_time)
+            self.last_timings = {
+                'train': {},
+                'valid': {}
+            }
+            self.start_time = None
+            self.total_samples = 0
+
+    def __log_throughput(self, inference_data):
+        end_time = time.time()
+        throughput = self.total_samples / (end_time - self.start_time)
+        loop_time = (end_time - self.start_time) / (inference_data['global_batch_index'] - self.start_batch)
+        
+        if self.log_console:
+            mode = 'Train' if inference_data['train'] else 'Valid'
+            info_string = f"\t{mode} Throughput: {throughput:.2f} samples/sec"
+            info_string += f"\n\t{mode} Loop Time: {loop_time} sec"
+            print(info_string)
+
+        if self.log_wandb:
+            mode = 'train' if inference_data['train'] else 'valid'
+            wandb.log({
+                f'{mode}/throughput': throughput,
+                f'{mode}/loop-time': loop_time,
+                'batch': inference_data['global_batch_index'],
+            })
+    
+        return loop_time
+
+    def __log_profiles(self, inference_data, loop_time):
+        mode = 'train' if inference_data['train'] else 'valid'
+        wandb_log = {'batch': inference_data['global_batch_index']}
+        profiled_time = 0
+        for name, timings in self.last_timings[mode].items():
+            mean = sum(timings) / len(timings)
+            profiled_time += mean
+            wandb_log[f'{mode}/timing-{name}'] = mean
+
+            if self.log_console:
+                print(f'\t{mode} - {name}: {mean}')
+
+        unprofiled_time = loop_time - profiled_time
+        wandb_log[f'{mode}/timing-unprofiled'] = unprofiled_time
+        if self.log_console:
+            print(f'\tUnprofiled Time: {unprofiled_time}')
+
+        if self.log_wandb:
+            wandb.log(wandb_log)
+
 
 class ArtifactLogger(InferenceLogger):
     def __init__(self, directory: str, log_every_epoch=1):
@@ -154,7 +250,7 @@ class LossLogger(InferenceLogger):
             if inference_data['train']:
                 wandb.log({'train/loss_batch': inference_data['loss'], 'batch': inference_data['global_batch_index']})
             else:
-                wandb.log({'valid/loss_batch': inference_data['loss'], 'batch': inference_data['global_batch_index']})#, step=inference_data['global_batch_index'])
+                wandb.log({'valid/loss_batch': inference_data['loss'], 'batch': inference_data['global_batch_index']})
 
     def update(self, inference_data):
         new_epoch = False
@@ -369,7 +465,7 @@ class ClassifierLogger(InferenceLogger):
             pred_name = self.index_to_name[pred.item()]
             target_name = self.index_to_name[target.item()]
             named_pred_dist = [
-                (conf, self.index_to_name[index]) for index, conf in enumerate(pred_dist.squeeze())
+                (conf, self.index_to_name[index]) for index, conf in enumerate(pred_dist.squeeze().cpu())
             ]
             named_pred_dist = sorted(named_pred_dist, key=lambda x: -x[0])
 

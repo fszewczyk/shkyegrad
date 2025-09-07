@@ -1,6 +1,7 @@
 from typing import Union
 import torch
 import numpy as np
+from ..utils.profiler import Profiler
 
 class Runner:
     def __init__(
@@ -40,16 +41,23 @@ class Runner:
             if train:
                 self.model.train()
                 for batch_index, (x, y) in enumerate(self.training_loader):
-                    x = x.to(self.device)
-                    y = y.to(self.device)
+                    with Profiler() as profiler_data_move:
+                        x = x.to(self.device)
+                        y = y.to(self.device)
 
                     self.optimizer.zero_grad()
 
-                    pred = self.model(x)
-                    loss = self.loss_fn(pred, y)
-                    loss.backward()
+                    with Profiler() as profiler_inference:
+                        pred = self.model(x)
 
-                    self.optimizer.step()
+                    with Profiler() as profiler_loss:
+                        loss = self.loss_fn(pred, y)
+
+                    with Profiler() as profiler_backward:
+                        loss.backward()
+
+                    with Profiler() as profiler_optimizer:
+                        self.optimizer.step()
 
                     inference_data = {
                         'input': x,
@@ -64,21 +72,35 @@ class Runner:
                         'train': True,
                         'model': self.model,
                         'optimizer': self.optimizer,
-                        'lr_scheduler': self.lr_scheduler
+                        'lr_scheduler': self.lr_scheduler,
+                        'profiles': {
+                            'batch_load': self.training_loader.last_waiting_time if hasattr(self.training_loader, 'last_waiting_time') else 0,
+                            'data_move': profiler_data_move.elapsed,
+                            'inference': profiler_inference.elapsed,
+                            'loss': profiler_loss.elapsed,
+                            'backward': profiler_backward.elapsed,
+                            'optimizer': profiler_optimizer.elapsed,
+                        }
                     }
+
                     for logger in self.loggers:
                         logger(inference_data)
 
             if validate:
+                assert self.validation_loader, "Trying to validate without validation loader."
                 if self.validation_loader:
                     self.model.eval()
                     with torch.no_grad():
                         for batch_index, (x, y) in enumerate(self.validation_loader):
-                            x = x.to(self.device)
-                            y = y.to(self.device)
+                            with Profiler() as profiler_data_move:
+                                x = x.to(self.device)
+                                y = y.to(self.device)
 
-                            pred = self.model(x)
-                            loss = self.loss_fn(pred, y)
+                            with Profiler() as profiler_inference:
+                                pred = self.model(x)
+
+                            with Profiler() as profiler_loss:
+                                loss = self.loss_fn(pred, y)
                             
                             inference_data = {
                                 'input': x,
@@ -93,8 +115,15 @@ class Runner:
                                 'train': False,
                                 'model': self.model,
                                 'optimizer': self.optimizer,
-                                'lr_scheduler': self.lr_scheduler
+                                'lr_scheduler': self.lr_scheduler,
+                                'profiles': {
+                                    'batch_load': self.validation_loader.last_waiting_time if hasattr(self.validation_loader, 'last_waiting_time') else 0,
+                                    'data_move': profiler_data_move.elapsed,
+                                    'inference': profiler_inference.elapsed,
+                                    'loss': profiler_loss.elapsed,
+                                }
                             }
+
                             for logger in self.loggers:
                                 logger(inference_data)
 
