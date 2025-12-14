@@ -274,10 +274,10 @@ class LossLogger(InferenceLogger):
     def plot(self, xlabel='Epoch', ylabel='Loss', **kwargs):
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         
-        ax.plot(np.arange(1, self.train.size(0) + 1), self.train.mean(dim=1), label='Train', **kwargs)
+        ax.plot(np.arange(1, self.train.size(0) + 1), self.train.mean(dim=1).cpu().detach(), label='Train', **kwargs)
 
         if self.valid is not None:
-            ax.plot(np.arange(1, self.train.size(0) + 1), self.valid.mean(dim=1), label='Validation', **kwargs)
+            ax.plot(np.arange(1, self.train.size(0) + 1), self.valid.mean(dim=1).cpu().detach(), label='Validation', **kwargs)
         
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
